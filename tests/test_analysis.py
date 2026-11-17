@@ -130,3 +130,65 @@ class TestAnalysis(LabCase):
         self.assertEqual(result["statistics"]["means"], (F(1, 3), F(1, 3)))
         self.assertEqual(result["statistics"]["covariance"],
                          ((F(4, 9), F(4, 9)), (F(4, 9), F(4, 9))))
+
+    def test_same_form_contributions_keep_distinct_positions(self):
+        same_form = grammar([Rule("p", "S", "unary", ("S",), F(1, 4)),
+                             Rule("q", "S", "unary", ("S",), F(1, 4)),
+                             emit(weight=F(1, 2))], name="unary-shape")
+        plan = compile_grammar(same_form)
+        positions = {c.rule_id: (c.kind, c.edge_index) for c in plan.contributions}
+        self.assertEqual(len(set(positions.values())), len(positions))
+        for contribution in plan.contributions:
+            edges = {"emit": plan.emissions, "unary": plan.unary,
+                     "binary": plan.binary}[contribution.kind]
+            self.assertEqual(edges[contribution.edge_index].rule_id,
+                             contribution.rule_id)
+        binary_same_form = grammar(
+            [Rule("x", "S", "binary", ("S", "S"), F(1, 4)),
+             Rule("y", "S", "binary", ("S", "S"), F(1, 4)),
+             emit(weight=F(1, 2))], name="binary-shape")
+        plan = compile_grammar(binary_same_form)
+        positions = {c.rule_id: (c.kind, c.edge_index) for c in plan.contributions}
+        self.assertEqual(len(set(positions.values())), len(positions))
+        result = self.analyze(binary_same_form, "aa", ("x", "y"))
+        # Both same-form binary rules compete for the single split of "aa":
+        # exactly one of them applies in every parse, so the joint count is
+        # always 1 and the two indicators are perfectly anti-correlated.
+        self.assertEqual(result["evidence"], F(1, 8))
+        self.assertEqual(result["statistics"]["means"], (F(1, 2), F(1, 2)))
+        self.assertEqual(result["statistics"]["covariance"],
+                         ((F(1, 4), F(-1, 4)), (F(-1, 4), F(1, 4))))
+
+    def test_each_application_counted_individually(self):
+        value = grammar([Rule("pair", "S", "binary", ("A", "A"), F(1)),
+                         emit("emit", "A")], nts=("S", "A"), name="two-children")
+        result = self.analyze(value, "aa", ("emit",))
+        self.assertEqual(result["evidence"], F(1))
+        self.assertEqual(result["statistics"]["means"], (F(2),))
+        self.assertEqual(result["statistics"]["covariance"], ((F(0),),))
+
+    def test_recursive_binary_with_loops_all_splits(self):
+        value = grammar([Rule("loop", "S", "unary", ("S",), F(1, 5)),
+                         Rule("fork", "S", "binary", ("S", "S"), F(1, 5)),
+                         emit(weight=F(3, 5))], name="recursive-both")
+        result = self.analyze(value, "aaa", ("loop", "fork"))
+        self.assertEqual(result["evidence"], F(27, 512))
+        self.assertEqual(result["statistics"]["means"], (F(5, 4), F(2)))
+        self.assertEqual(result["statistics"]["covariance"],
+                         ((F(25, 16), F(0)), (F(0), F(0))))
+
+    def test_zero_weight_same_form_rule_reports_exact_zero(self):
+        value = grammar([Rule("live", "S", "unary", ("S",), F(1, 2)),
+                         Rule("idle", "S", "unary", ("S",), F(0)),
+                         emit(weight=F(1, 2))], name="idle")
+        plan = compile_grammar(value)
+        live, idle = select_contributions(plan, ("live", "idle"))
+        self.assertNotEqual((live.kind, live.edge_index), (idle.kind, idle.edge_index))
+        result = self.analyze(value, "a", ("live", "idle"))
+        self.assertEqual(result["evidence"], F(1))
+        self.assertEqual(result["statistics"]["means"], (F(1), F(0)))
+        self.assertEqual(result["statistics"]["covariance"],
+                         ((F(2), F(0)), (F(0), F(0))))
+        reversed_grammar = grammar(tuple(reversed(value.rules)), name="idle-reversed")
+        self.assertEqual(self.analyze(reversed_grammar, "a", ("live", "idle"))["statistics"],
+                         result["statistics"])

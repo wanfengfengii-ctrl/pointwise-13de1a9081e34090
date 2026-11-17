@@ -13,17 +13,14 @@ class RuleContribution:
         return 1
 
 
-def _shape(kind, edge):
-    target = ((edge.character,) if kind == "emit" else
-              (edge.child,) if kind == "unary" else (edge.left, edge.right))
-    return kind, edge.lhs, target
-
-
 def build_contributions(grammar, emissions, unary, binary):
-    contributions, positions = [], {}
+    # Every original rule owns the edge built from that very rule, even when two
+    # rules share the same left-hand side and right-hand side shape.  Keying by
+    # shape would make same-form rules (including zero-weight ones) share a
+    # single execution position.
+    contributions = []
     for kind, edges in (("emit", emissions), ("unary", unary), ("binary", binary)):
-        for i, edge in enumerate(edges):
-            position = positions.setdefault(_shape(kind, edge), i)
+        for position, edge in enumerate(edges):
             contributions.append(RuleContribution(edge.rule_id, kind, position))
     validate_contribution_map(grammar, emissions, unary, binary, tuple(contributions))
     return tuple(contributions)
@@ -44,6 +41,10 @@ def validate_contribution_map(grammar, emissions, unary, binary, contributions):
         if type(contribution.edge_index) is not int or not 0 <= contribution.edge_index < len(edges):
             raise ValueError("invalid contribution index")
         edge = edges[contribution.edge_index]
+        # The position must be the rule's own execution edge: same-form rules
+        # must never share a position, so identity is checked on the edge too.
+        if edge.rule_id != rule.rule_id:
+            raise ValueError("contribution edge identity mismatch")
         if edge.lhs != index[rule.lhs]:
             raise ValueError("contribution left-hand side mismatch")
         target = ((edge.character,) if rule.kind == "emit" else
